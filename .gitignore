@@ -7,3 +7,7 @@ segments_features.parquet
 scan_log.txt
 __pycache__/
 *.pyc
+node_modules/
+shots/
+package-lock.json
+
