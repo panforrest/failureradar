@@ -308,9 +308,10 @@ function vEps(m){
        <button id="dl" class="px-3 py-1.5 text-sm rounded border border-slate-700
          hover:border-blue-500">Export drop-list</button>
      </div>
-     <p class="text-sm text-slate-400 mt-1">Top ${D.episodes.length} by wasted runtime.
-       Export produces a <span class="mono">DatasetFilter</span> that drops these in
-       EgoVerse's own <span class="mono">sync_s3.py</span>.</p>
+     <p class="text-sm text-slate-400 mt-1">Showing the top ${D.episodes.length} by wasted
+       runtime. Export covers all <b class="text-slate-200">${F(D.drop_list.length)}</b>
+       flagged episodes as a <span class="mono">DatasetFilter</span> for EgoVerse's own
+       <span class="mono">sync_s3.py</span>.</p>
      <div class="mt-4 overflow-auto max-h-[620px]"><table class="w-full text-sm">
        <thead class="text-[11px] uppercase tracking-wider text-slate-500 text-left sticky top-0 bg-[#11151c]">
          <tr><th class="py-2">Episode</th><th>Task</th><th class="text-right">Dur</th>
@@ -341,7 +342,7 @@ function vEps(m){
 }
 
 function exportFilter(){
-  const hashes = D.episodes.map(e => e.episode_hash);
+  const hashes = D.drop_list;
   const txt = `# FailureRadar drop-list - generated ${new Date().toISOString()}
 # ${hashes.length} episodes flagged as low-value demonstrations.
 # Paste into egomimic/scripts/data_download/sync_s3.py

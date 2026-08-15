@@ -254,7 +254,11 @@ featured = json.load(open("docs/clips/featured/manifest.json"))
 featured_hashes = {f["episode_hash"] for f in featured}
 
 seg_lookup = {r["episode_hash"]: r["segments"] for _, r in ann.iterrows()}
-top = S[S["flag"]].sort_values("lost_sec", ascending=False).head(250)
+all_flagged = S[S["flag"]].sort_values("lost_sec", ascending=False)
+# Full drop-list: every flagged episode. The detailed table below is truncated
+# for payload size, but the exported filter must cover all of them.
+drop_list = all_flagged["episode_hash"].tolist()
+top = all_flagged.head(250)
 episodes = []
 for _, r in top.iterrows():
     feats, items = score_episode(seg_lookup[r["episode_hash"]])
@@ -320,6 +324,7 @@ out = {
     "by_task": by_task.head(40).to_dict("records"),
     "validation": validation,
     "episodes": episodes,
+    "drop_list": drop_list,
     "featured": featured,
 }
 
