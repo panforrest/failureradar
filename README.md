@@ -5,6 +5,12 @@
 Robotics Hackathon, 15 Aug 2026 · Track 3, The Human Reward Model · built on the
 [EgoVerse](https://github.com/GaTech-RL2/EgoVerse) dataset with Modal compute.
 
+| Asset | Link |
+|---|---|
+| Live dashboard | https://panforrest.github.io/failureradar/ |
+| Demo video | https://panforrest.github.io/failureradar/FailureRadar_demo.mp4 |
+| Repo | https://github.com/panforrest/failureradar |
+
 ---
 
 ## The finding
@@ -201,5 +207,6 @@ build_results.py     assemble docs/results.json
 validate.py          flagged vs same-label baseline
 validate2.py         duration-controlled validation + residual test
 segments_probe.py    the repetition detector that failed, kept as a negative result
+record.js            render the narrated demo video from the live dashboard
 docs/index.html      dashboard
 ```
