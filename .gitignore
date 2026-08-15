@@ -12,5 +12,10 @@ shots/
 package-lock.json
 
 .env
+
+# narration audio + capture intermediates (regenerate with make_vo.py / record.js)
 demo/vo/
+demo/frames/
+demo/out/
+demo/check/
 
