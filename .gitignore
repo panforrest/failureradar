@@ -11,3 +11,6 @@ node_modules/
 shots/
 package-lock.json
 
+.env
+demo/vo/
+
