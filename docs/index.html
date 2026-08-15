@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FailureRadar — EgoVerse demonstration quality audit</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0a0c10; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .card { background:#11151c; border:1px solid #1e2530; }
+  .tabbtn.active { background:#1e2530; color:#fff; border-color:#3b82f6; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:#0a0c10; }
+  ::-webkit-scrollbar-thumb { background:#273040; border-radius:5px; }
+  .seg { transition: opacity .12s; cursor:pointer; }
+  .seg:hover { opacity:.75; }
+</style>
+</head>
+<body class="text-slate-300 antialiased">
+
+<header class="border-b border-slate-800 bg-[#0d1117]">
+  <div class="max-w-[1400px] mx-auto px-6 py-5 flex items-baseline gap-4 flex-wrap">
+    <h1 class="text-2xl font-semibold text-white tracking-tight">
+      Failure<span class="text-blue-400">Radar</span>
+    </h1>
+    <p class="text-slate-400 text-sm">
+      Which EgoVerse demonstrations teach a robot the wrong thing — and where, to the second.
+    </p>
+    <div class="ml-auto text-xs mono text-slate-500" id="stamp"></div>
+  </div>
+</header>
+
+<section class="max-w-[1400px] mx-auto px-6 pt-8">
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-3" id="kpis"></div>
+  <p class="text-xs text-slate-500 mt-3" id="kpisub"></p>
+</section>
+
+<nav class="max-w-[1400px] mx-auto px-6 pt-8">
+  <div class="flex gap-2 flex-wrap" id="tabs"></div>
+</nav>
+
+<main class="max-w-[1400px] mx-auto px-6 py-6 space-y-6" id="main"></main>
+
+<footer class="max-w-[1400px] mx-auto px-6 py-10 text-xs text-slate-600 border-t border-slate-800 mt-10">
+  Built for the Robotics Hackathon, 15 Aug 2026 · Track 3, The Human Reward Model ·
+  signals computed from annotation structure and end-effector kinematics only —
+  no LLM judge, no video decoding.
+</footer>
+
+<script>
+const F = n => n.toLocaleString();
+const P = n => (n).toFixed(2) + '%';
+let D = null, TAB = 'video';
+
+const TABS = [
+  ['video',      'Confidence meter'],
+  ['prevalence', 'Prevalence audit'],
+  ['episodes',   'Tagged episodes'],
+  ['validation', 'Validation'],
+  ['corpus',     'Corpus contract audit'],
+  ['method',     'Method'],
+];
+
+fetch('results.json').then(r => r.json()).then(d => { D = d; boot(); });
+
+function boot(){
+  document.getElementById('stamp').textContent =
+    `${F(D.corpus.episodes)} episodes indexed · ${F(D.corpus.hours)} h`;
+
+  const pv = D.prevalence, va = D.validation;
+  kpi([
+    ['Episodes audited', F(pv.annotated_episodes), `${F(pv.total_segments)} annotated spans`],
+    ['Flagged', F(pv.flagged), `${pv.flagged_pct}% of audited episodes`],
+    ['Wasted runtime', pv.lost_hours + ' h', `${pv.lost_pct_of_annotated}% of annotated hours`],
+    ['Kinematic check', F(va.scanned_episodes), `episodes, ${va.bytes_per_episode_pct}% of bytes`],
+    ['Efficiency penalty', va.efficiency_penalty + '\u00d7', 'worse than duration predicts'],
+  ]);
+  document.getElementById('kpisub').textContent =
+    `Audited = the ${F(pv.annotated_episodes)} episodes that carry segment annotations. `
+    + `The corpus contract audit below covers all ${F(D.corpus.episodes)}.`;
+
+  const t = document.getElementById('tabs');
+  t.innerHTML = TABS.map(([k,l]) =>
+    `<button data-k="${k}" class="tabbtn px-4 py-2 text-sm rounded-md border border-slate-700
+     text-slate-400 hover:text-white">${l}</button>`).join('');
+  t.querySelectorAll('button').forEach(b => b.onclick = () => { TAB = b.dataset.k; render(); });
+  render();
+}
+
+function kpi(items){
+  document.getElementById('kpis').innerHTML = items.map(([l,v,s]) => `
+    <div class="card rounded-lg p-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-500">${l}</div>
+      <div class="text-2xl font-semibold text-white mt-1 mono">${v}</div>
+      <div class="text-[11px] text-slate-500 mt-1">${s}</div>
+    </div>`).join('');
+}
+
+function render(){
+  document.querySelectorAll('.tabbtn').forEach(b =>
+    b.classList.toggle('active', b.dataset.k === TAB));
+  const m = document.getElementById('main');
+  m.innerHTML = '';
+  ({video:vVideo, prevalence:vPrev, episodes:vEps,
+    validation:vVal, corpus:vCorpus, method:vMethod})[TAB](m);
+}
+
+/* ---------------------------------------------------------------- video tab */
+function vVideo(m){
+  m.innerHTML = `
+    <div class="card rounded-lg p-5">
+      <h2 class="text-white font-semibold">Confidence meter over a video segment</h2>
+      <p class="text-sm text-slate-400 mt-1 max-w-3xl">
+        The strip under each video is the maximum hand speed per frame, taken from
+        <span class="mono text-slate-300">left/right.obs_ee_pose</span>. Red bands are spans
+        FailureRadar flagged from annotation timing alone — the kinematics were never used to
+        produce the flag, so agreement between the two is independent evidence. Click any
+        segment to jump there.
+      </p>
+      <div class="flex gap-2 mt-4 flex-wrap" id="clips"></div>
+    </div>
+    <div class="card rounded-lg p-5" id="player"></div>`;
+
+  const c = m.querySelector('#clips');
+  c.innerHTML = D.featured.map((f,i) => `
+    <button data-i="${i}" class="clipbtn px-3 py-2 rounded-md border border-slate-700
+      text-xs text-left hover:border-blue-500">
+      <div class="text-slate-200">${f.task}</div>
+      <div class="text-[10px] text-slate-500 mono">
+        ${f.flags.n_outlier ? f.flags.worst_ratio + '\u00d7 outlier' : 'unlabelled'}
+      </div>
+    </button>`).join('');
+  c.querySelectorAll('button').forEach(b =>
+    b.onclick = () => showClip(+b.dataset.i));
+  showClip(0);
+}
+
+function showClip(i){
+  const f = D.featured[i];
+  document.querySelectorAll('.clipbtn').forEach((b,j) =>
+    b.classList.toggle('border-blue-500', i === j));
+
+  const dur = f.duration;
+  const p = document.getElementById('player');
+  p.innerHTML = `
+    <div class="grid lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] gap-6">
+      <div>
+        <video id="vid" class="w-full rounded-md bg-black" controls preload="metadata"
+               src="clips/featured/${f.mp4}"></video>
+        <div class="mt-3">
+          <svg id="strip" viewBox="0 0 1000 150" class="w-full" style="height:150px"></svg>
+        </div>
+        <div class="flex items-center gap-3 mt-1 text-[11px] text-slate-500 mono">
+          <span class="inline-flex items-center gap-1">
+            <span class="w-3 h-2 inline-block bg-red-500/70"></span>flagged span</span>
+          <span class="inline-flex items-center gap-1">
+            <span class="w-3 h-2 inline-block bg-amber-500/60"></span>unlabelled span</span>
+          <span class="inline-flex items-center gap-1">
+            <span class="w-3 h-2 inline-block bg-slate-600"></span>normal span</span>
+          <span class="ml-auto" id="readout"></span>
+        </div>
+      </div>
+      <div>
+        <div class="text-white font-medium">${f.task}
+          <span class="text-slate-500 mono text-xs">· ${f.lab} · ${dur.toFixed(1)}s
+          · ${f.total_frames} frames @ ${f.fps}fps</span></div>
+        <div class="mt-3 space-y-1">
+          ${f.flags.reasons.map(r =>
+            `<div class="text-sm text-red-300 bg-red-500/10 border border-red-500/25
+              rounded px-3 py-2">${r}</div>`).join('') || ''}
+        </div>
+        <div class="mt-4 text-[11px] uppercase tracking-wider text-slate-500">Annotation spans</div>
+        <div class="mt-2 max-h-[380px] overflow-auto pr-2 space-y-1" id="seglist"></div>
+      </div>
+    </div>`;
+
+  const segs = f.segments;
+  document.getElementById('seglist').innerHTML = segs.map((s,k) => {
+    const cls = s.outlier ? 'border-red-500/40 bg-red-500/10'
+              : s.idle    ? 'border-amber-500/30 bg-amber-500/10'
+                          : 'border-slate-700/60';
+    return `<div data-t="${s.start}" class="seg border ${cls} rounded px-2 py-1.5 text-xs flex gap-2">
+      <span class="mono text-slate-500 shrink-0">${s.start.toFixed(1)}s</span>
+      <span class="flex-1 ${s.idle ? 'text-amber-300 italic' : 'text-slate-300'}">
+        ${s.idle ? 'no label' : esc(s.label)}</span>
+      <span class="mono shrink-0 ${s.outlier ? 'text-red-400' : 'text-slate-600'}">
+        ${s.dur.toFixed(1)}s${s.ratio && s.outlier ? ' · ' + s.ratio + '\u00d7' : ''}</span>
+    </div>`;
+  }).join('');
+
+  const vid = document.getElementById('vid');
+  document.querySelectorAll('#seglist .seg').forEach(el =>
+    el.onclick = () => { vid.currentTime = +el.dataset.t; vid.play(); });
+
+  drawStrip(f, dur, vid);
+}
+
+function drawStrip(f, dur, vid){
+  const W = 1000, H = 150, PAD = 18, h = H - PAD * 2;
+  const sp = f.trace_speed, ts = f.trace_t;
+  const mx = Math.max(...sp) || 1;
+  const x = t => (t / dur) * W;
+
+  let bands = '';
+  f.segments.forEach(s => {
+    const c = s.outlier ? 'rgba(239,68,68,.28)' : s.idle ? 'rgba(245,158,11,.20)' : null;
+    if (c) bands += `<rect x="${x(s.start)}" y="${PAD}" width="${Math.max(1,x(s.end)-x(s.start))}"
+      height="${h}" fill="${c}"/>`;
+  });
+
+  let seglane = '';
+  f.segments.forEach(s => {
+    const c = s.outlier ? '#ef4444' : s.idle ? '#f59e0b' : '#475569';
+    seglane += `<rect class="seg" data-t="${s.start}" x="${x(s.start)+.5}" y="${H-12}"
+      width="${Math.max(1.5,x(s.end)-x(s.start)-1)}" height="8" rx="2" fill="${c}"><title>${
+      esc(s.idle ? 'no label' : s.label)} · ${s.dur.toFixed(1)}s${
+      s.outlier ? ' · ' + s.ratio + 'x median' : ''}</title></rect>`;
+  });
+
+  let d = '';
+  sp.forEach((v, i) => {
+    const px = x(ts[i]), py = PAD + h - (v / mx) * h;
+    d += (i ? 'L' : 'M') + px.toFixed(1) + ' ' + py.toFixed(1);
+  });
+
+  document.getElementById('strip').innerHTML = `
+    <rect x="0" y="${PAD}" width="${W}" height="${h}" fill="#0d1117"/>
+    ${bands}
+    <path d="${d}" fill="none" stroke="#38bdf8" stroke-width="1.4"/>
+    ${seglane}
+    <line id="ph" x1="0" y1="${PAD-6}" x2="0" y2="${H-2}" stroke="#fff" stroke-width="1.5"/>
+    <text x="4" y="12" fill="#64748b" font-size="10">hand speed (m/frame), max of both hands</text>`;
+
+  document.querySelectorAll('#strip .seg').forEach(el =>
+    el.onclick = () => { vid.currentTime = +el.dataset.t; vid.play(); });
+
+  const ph = document.getElementById('ph');
+  const ro = document.getElementById('readout');
+  vid.ontimeupdate = () => {
+    const px = x(vid.currentTime);
+    ph.setAttribute('x1', px); ph.setAttribute('x2', px);
+    const i = Math.min(sp.length - 1, Math.round(vid.currentTime * (f.trace_hz || 10)));
+    const inFlag = f.segments.some(s =>
+      (s.outlier || s.idle) && vid.currentTime >= s.start && vid.currentTime < s.end);
+    ro.innerHTML = `t=${vid.currentTime.toFixed(1)}s · speed ${(sp[i]||0).toFixed(4)}`
+      + (inFlag ? ' · <span class="text-red-400">FLAGGED</span>' : '');
+  };
+}
+
+/* ----------------------------------------------------------- prevalence tab */
+function vPrev(m){
+  const pv = D.prevalence;
+  m.innerHTML = `
+   <div class="card rounded-lg p-5">
+    <h2 class="text-white font-semibold">Prevalence of low-value demonstrations</h2>
+    <p class="text-sm text-slate-400 mt-1 max-w-3xl">Across all ${F(pv.annotated_episodes)}
+      annotated episodes (${pv.annotated_hours} h). An episode can appear in more than one row.</p>
+    <table class="w-full mt-4 text-sm">
+      <thead class="text-[11px] uppercase tracking-wider text-slate-500 text-left">
+        <tr><th class="py-2">Signal</th><th class="text-right">Episodes</th>
+        <th class="text-right">Share</th><th class="w-1/3"></th></tr></thead>
+      <tbody>${pv.buckets.map(b => `
+        <tr class="border-t border-slate-800">
+          <td class="py-2 text-slate-300">${b.label}</td>
+          <td class="text-right mono text-white">${F(b.n)}</td>
+          <td class="text-right mono text-slate-400">${P(100*b.n/pv.annotated_episodes)}</td>
+          <td class="pl-4"><div class="h-2 bg-slate-800 rounded">
+            <div class="h-2 bg-blue-500 rounded" style="width:${
+              Math.min(100, 100*b.n/pv.annotated_episodes*12)}%"></div></div></td>
+        </tr>`).join('')}
+        <tr class="border-t-2 border-slate-700">
+          <td class="py-2 text-white font-medium">Any signal</td>
+          <td class="text-right mono text-white">${F(pv.flagged)}</td>
+          <td class="text-right mono text-blue-400">${pv.flagged_pct}%</td><td></td></tr>
+      </tbody></table>
+   </div>
+   <div class="card rounded-lg p-5">
+     <h2 class="text-white font-semibold">Where the waste is concentrated</h2>
+     <p class="text-sm text-slate-400 mt-1">Tasks with at least 20 annotated episodes,
+       ranked by flag rate. This is the sampling guidance: down-weight the top, keep the bottom.</p>
+     <table class="w-full mt-4 text-sm">
+       <thead class="text-[11px] uppercase tracking-wider text-slate-500 text-left">
+         <tr><th class="py-2">Task</th><th class="text-right">Episodes</th>
+         <th class="text-right">Flagged</th><th class="text-right">Flag rate</th>
+         <th class="text-right">Wasted</th><th class="text-right">Worst ratio</th></tr></thead>
+       <tbody>${D.by_task.slice(0,25).map(t => `
+         <tr class="border-t border-slate-800">
+           <td class="py-1.5 mono text-slate-300">${esc(t.task)}</td>
+           <td class="text-right mono">${t.episodes}</td>
+           <td class="text-right mono">${t.flagged}</td>
+           <td class="text-right mono ${t.flag_pct>10?'text-red-400':'text-slate-400'}">${t.flag_pct}%</td>
+           <td class="text-right mono text-slate-400">${t.lost_min} min</td>
+           <td class="text-right mono text-slate-500">${t.worst ? t.worst.toFixed(1)+'\u00d7' : '—'}</td>
+         </tr>`).join('')}</tbody></table>
+   </div>`;
+}
+
+/* ------------------------------------------------------------- episodes tab */
+function vEps(m){
+  m.innerHTML = `
+   <div class="card rounded-lg p-5">
+     <div class="flex items-center gap-3 flex-wrap">
+       <h2 class="text-white font-semibold">Tagged episodes</h2>
+       <input id="q" placeholder="filter by task or hash"
+         class="ml-auto bg-[#0d1117] border border-slate-700 rounded px-3 py-1.5 text-sm w-64"/>
+       <button id="dl" class="px-3 py-1.5 text-sm rounded border border-slate-700
+         hover:border-blue-500">Export drop-list</button>
+     </div>
+     <p class="text-sm text-slate-400 mt-1">Top ${D.episodes.length} by wasted runtime.
+       Export produces a <span class="mono">DatasetFilter</span> that drops these in
+       EgoVerse's own <span class="mono">sync_s3.py</span>.</p>
+     <div class="mt-4 overflow-auto max-h-[620px]"><table class="w-full text-sm">
+       <thead class="text-[11px] uppercase tracking-wider text-slate-500 text-left sticky top-0 bg-[#11151c]">
+         <tr><th class="py-2">Episode</th><th>Task</th><th class="text-right">Dur</th>
+         <th class="text-right">Idle</th><th class="text-right">Worst</th>
+         <th class="text-right">Wasted</th><th>Why</th></tr></thead>
+       <tbody id="rows"></tbody></table></div>
+   </div>`;
+  const draw = q => {
+    const rows = D.episodes.filter(e =>
+      !q || e.task.toLowerCase().includes(q) || e.episode_hash.includes(q));
+    document.getElementById('rows').innerHTML = rows.map(e => `
+      <tr class="border-t border-slate-800 align-top">
+        <td class="py-1.5 mono text-[11px] text-slate-500">${e.episode_hash.slice(0,12)}…
+          ${e.featured ? '<span class="text-blue-400">●</span>' : ''}</td>
+        <td class="mono text-slate-300">${esc(e.task)}</td>
+        <td class="text-right mono text-slate-400">${e.duration}s</td>
+        <td class="text-right mono ${e.idle_frac>.5?'text-amber-400':'text-slate-500'}">${
+          (100*e.idle_frac).toFixed(0)}%</td>
+        <td class="text-right mono ${e.worst_ratio>=5?'text-red-400':'text-slate-500'}">${
+          e.worst_ratio ? e.worst_ratio+'\u00d7' : '—'}</td>
+        <td class="text-right mono text-slate-300">${e.lost_sec}s</td>
+        <td class="text-slate-400 text-xs">${e.reasons.join('; ')}</td>
+      </tr>`).join('');
+  };
+  draw('');
+  document.getElementById('q').oninput = e => draw(e.target.value.toLowerCase());
+  document.getElementById('dl').onclick = exportFilter;
+}
+
+function exportFilter(){
+  const hashes = D.episodes.map(e => e.episode_hash);
+  const txt = `# FailureRadar drop-list - generated ${new Date().toISOString()}
+# ${hashes.length} episodes flagged as low-value demonstrations.
+# Paste into egomimic/scripts/data_download/sync_s3.py
+
+FAILURERADAR_DROP = {
+${hashes.map(h => '    "' + h + '",').join('\n')}
+}
+
+DATA_FILTERS["failureradar-clean"] = DatasetFilter(
+    filter_lambdas=[
+        "lambda row: row.get('episode_hash') not in FAILURERADAR_DROP",
+        "lambda row: not row.get('is_deleted')",
+        "lambda row: (row.get('num_frames') or 0) >= 150",
+    ]
+)
+`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([txt], {type:'text/plain'}));
+  a.download = 'failureradar_filter.py';
+  a.click();
+}
+
+/* ----------------------------------------------------------- validation tab */
+function vVal(m){
+  const v = D.validation;
+  m.innerHTML = `
+   <div class="card rounded-lg p-5">
+     <h2 class="text-white font-semibold">Does the flag predict anything real?</h2>
+     <p class="text-sm text-slate-400 mt-1 max-w-3xl">
+       The flag is computed from annotation timestamps. To test it we downloaded end-effector
+       pose for ${F(v.scanned_episodes)} episodes — ${v.bytes_per_episode_pct}% of each store,
+       skipping the JPEG frames — and measured motion the flag never saw.
+       <b class="text-slate-200">Path efficiency</b> is straight-line displacement divided by
+       path length: low efficiency means the hand moved a lot and arrived nowhere.
+     </p>
+     <div class="grid md:grid-cols-3 gap-3 mt-4">
+       ${[['Segments measured', F(v.scanned_segments), ''],
+          ['Flagged segments', F(v.flagged_segments), 'cycle-time outliers'],
+          ['Efficiency penalty', v.efficiency_penalty+'\u00d7',
+           'below the duration trend, p = 1.6e-14']].map(([a,b,c])=>`
+         <div class="rounded-lg border border-slate-800 p-4">
+           <div class="text-[11px] uppercase tracking-wider text-slate-500">${a}</div>
+           <div class="text-xl mono text-white mt-1">${b}</div>
+           <div class="text-[11px] text-slate-500">${c}</div></div>`).join('')}
+     </div>
+   </div>
+   <div class="card rounded-lg p-5">
+     <h3 class="text-white font-medium">Controlling for the obvious confound</h3>
+     <p class="text-sm text-slate-400 mt-1 max-w-3xl">
+       Efficiency falls with duration by construction, and flagged segments are long by
+       definition. So each flagged segment is compared only against non-flagged segments of
+       comparable length. The gap survives in <b class="text-slate-200">every</b> bin.
+     </p>
+     <table class="w-full mt-4 text-sm">
+       <thead class="text-[11px] uppercase tracking-wider text-slate-500 text-left">
+         <tr><th class="py-2">Segment length</th><th class="text-right">Flagged</th>
+         <th class="text-right">Normal</th><th class="text-right">Efficiency, flagged</th>
+         <th class="text-right">Efficiency, normal</th><th class="text-right">Ratio</th></tr></thead>
+       <tbody>${v.duration_bins.map(b => `
+         <tr class="border-t border-slate-800">
+           <td class="py-1.5 mono text-slate-300">${b.bin}</td>
+           <td class="text-right mono text-slate-500">${b.n_flagged}</td>
+           <td class="text-right mono text-slate-500">${b.n_normal}</td>
+           <td class="text-right mono text-red-400">${b.eff_flagged}</td>
+           <td class="text-right mono text-slate-300">${b.eff_normal}</td>
+           <td class="text-right mono text-blue-400">${(b.eff_flagged/b.eff_normal).toFixed(2)}\u00d7</td>
+         </tr>`).join('')}</tbody></table>
+     <p class="text-xs text-slate-500 mt-3 mono">
+       Fitted on non-flagged segments: log(eff) = ${v.trend.slope}·log(dur) + ${v.trend.intercept}.
+       Median residual — flagged ${v.residual_flagged_median}, normal ${v.residual_normal_median}.
+     </p>
+   </div>
+   <div class="card rounded-lg p-5">
+     <h3 class="text-white font-medium">The unlabelled spans are not idle — they are lost data</h3>
+     <p class="text-sm text-slate-400 mt-1 max-w-3xl">
+       ${F(v.unlabelled.segments)} spans in the scanned sample carry a null label
+       (${v.unlabelled.hours} h). If these were genuine pauses the hands would be still.
+       They are not: <b class="text-slate-200">${v.unlabelled.active_pct}%</b> move faster than
+       the 25th percentile of labelled work, which is
+       <b class="text-slate-200">${v.unlabelled.active_hours} h</b> of real manipulation with no
+       language supervision attached. That is recoverable by re-annotation, not something to drop.
+     </p>
+     <div class="h-3 mt-4 rounded overflow-hidden flex">
+       <div class="bg-emerald-500" style="width:${v.unlabelled.active_pct}%"></div>
+       <div class="bg-slate-700" style="width:${100-v.unlabelled.active_pct}%"></div>
+     </div>
+     <div class="flex justify-between text-[11px] text-slate-500 mt-1">
+       <span class="text-emerald-400">active manipulation, unlabelled</span>
+       <span>genuinely still</span></div>
+   </div>`;
+}
+
+/* --------------------------------------------------------------- corpus tab */
+function vCorpus(m){
+  m.innerHTML = `
+   <div class="card rounded-lg p-5">
+     <h2 class="text-white font-semibold">Corpus contract audit — all ${F(D.corpus.episodes)} episodes</h2>
+     <p class="text-sm text-slate-400 mt-1 max-w-3xl">
+       Checked against the rules in EgoVerse's own
+       <span class="mono text-slate-300">CONTRIBUTING_DATA.md</span>. These are index-level
+       findings — no download required, so this runs over the entire corpus rather than a sample.
+     </p>
+     <div class="mt-4 space-y-2">
+       ${D.audit.map(a => `
+         <div class="border border-slate-800 rounded-lg p-3 flex gap-4 items-start">
+           <span class="mono text-lg ${a.severity==='high'?'text-red-400':
+             a.severity==='medium'?'text-amber-400':'text-slate-500'}">${F(a.count)}</span>
+           <div class="flex-1">
+             <div class="text-slate-200 text-sm">${a.title}
+               <span class="mono text-[11px] text-slate-600">${a.pct}%</span></div>
+             <div class="text-xs text-slate-500 mt-1">${esc(a.detail)}</div>
+             ${a.fix ? `<div class="text-[11px] mono text-blue-400/80 mt-1">${esc(a.fix)}</div>`:''}
+           </div>
+         </div>`).join('')}
+     </div>
+   </div>
+   <div class="card rounded-lg p-5">
+     <h3 class="text-white font-medium">Contributors</h3>
+     <table class="w-full mt-3 text-sm">
+       <thead class="text-[11px] uppercase tracking-wider text-slate-500 text-left">
+         <tr><th class="py-2">Lab</th><th class="text-right">Episodes</th>
+         <th class="text-right">Hours</th><th class="text-right">Distinct tasks</th>
+         <th class="text-right">Annotated</th></tr></thead>
+       <tbody>${D.corpus.labs.map(l => `
+         <tr class="border-t border-slate-800">
+           <td class="py-1.5 mono text-slate-300">${esc(l.lab || '(blank)')}</td>
+           <td class="text-right mono">${F(l.episodes)}</td>
+           <td class="text-right mono text-slate-400">${F(l.hours)}</td>
+           <td class="text-right mono ${l.tasks>1000?'text-red-400':'text-slate-400'}">${F(l.tasks)}</td>
+           <td class="text-right mono ${l.annotated?'text-emerald-400':'text-slate-600'}">${F(l.annotated)}</td>
+         </tr>`).join('')}</tbody></table>
+     <p class="text-xs text-slate-500 mt-3">
+       ${F(D.corpus.tasks)} distinct task strings collapse to ${F(D.corpus.tasks_canonical)}
+       after stemming. Only mecka ships segment annotations, which is why the prevalence audit
+       is scoped there — every other contributor is unauditable for demonstration quality today.
+     </p>
+   </div>`;
+}
+
+/* --------------------------------------------------------------- method tab */
+function vMethod(m){
+  m.innerHTML = `
+   <div class="card rounded-lg p-5 prose-sm max-w-none">
+     <h2 class="text-white font-semibold">Method</h2>
+     <div class="text-sm text-slate-400 space-y-3 mt-2 max-w-3xl">
+       <p><b class="text-slate-200">The problem with counting repeats.</b> A first pass flagged
+       episodes with repeated annotation labels, on the theory that humans repeat an action when
+       they fail. That detector's top hit was a person scooping coffee beans 66 times — a
+       perfectly good demonstration. Repetition is a property of the task, not of failure.</p>
+
+       <p><b class="text-slate-200">Cycle-time outliers.</b> The fix is to normalise within the
+       episode. For every label repeated at least three times, take the median duration of that
+       label <i>in that episode</i>, and flag spans running ≥3× that median and ≥3 s. A
+       repetitive task now supplies its own tight baseline, so the more cyclic the work, the
+       more sensitive the detector. In <span class="mono">peeling_potatoes</span>, peeling runs
+       2.7–5.5 s per span — except one at 60.1 s.</p>
+
+       <p><b class="text-slate-200">Null-labelled spans.</b> Some episodes carry segment
+       timings with no label text. Rather than assume these are pauses, we measured them: most
+       contain hand motion at working speed, so they are annotation failures rather than idle
+       time.</p>
+
+       <p><b class="text-slate-200">Kinematic corroboration.</b> Flags come from annotations;
+       the check comes from geometry. We pulled only
+       <span class="mono">left/right.obs_ee_pose</span> — 4.4 MB of a 271 MB store — for 800
+       episodes on 60 parallel Modal containers, masked the
+       <span class="mono">1e9</span> tracking sentinel documented in
+       <span class="mono">CONTRIBUTING_DATA.md</span>, sliced to
+       <span class="mono">total_frames</span> to avoid the zero-padded tail, and computed
+       per-span speed, dwell and path efficiency.</p>
+
+       <p><b class="text-slate-200">What this is not.</b> Only mecka publishes segment
+       annotations, so the prevalence figures describe 23,289 episodes, not all 446,957. There
+       is no ground-truth success label anywhere in EgoVerse —
+       <span class="mono">eval_success</span> is True for 428,310 rows and False for 6 — so
+       nothing here is calibrated against human success/failure judgements. What is measured is
+       runtime that teaches a policy nothing: stalls, rework, and unlabelled work.</p>
+     </div>
+   </div>`;
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+</script>
+</body>
+</html>
